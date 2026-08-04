@@ -14,10 +14,7 @@ strikeouts, free text, etc.) from one or more PDF files, including:
   - the underlying document text covered by the annotation
     (for highlights, underlines, strikeouts, squiggly underlines)
 
-Unlike the old AppleScript approach, this reads the annotation objects
-directly out of the PDF file structure (via PyMuPDF), so it does not
-need Preview to be open, does not use UI scripting, and will not break
-when macOS or Preview's UI changes.
+The script reads the annotation objects directly out of the PDF file structure (via PyMuPDF).
 
 Usage:
     python3 extract_pdf_annotations.py file1.pdf [file2.pdf ...] [-o output.json|.csv|.txt]
@@ -106,10 +103,12 @@ def get_covered_text(page, annot):
         return ""
 
 
-def extract_annotations(pdf_path):
+def extract_annotations(pdf_path, doc=None):
     """Return a list of dicts, one per annotation, for the given PDF."""
     results = []
-    doc = fitz.open(pdf_path)
+    close_when_done = doc is None
+    if doc is None:
+        doc = fitz.open(pdf_path)
 
     for page_index in range(len(doc)):
         page = doc[page_index]
@@ -141,7 +140,8 @@ def extract_annotations(pdf_path):
                 "highlighted_text": covered_text,
             })
 
-    doc.close()
+    if close_when_done:
+        doc.close()
     return results
 
 
@@ -189,6 +189,127 @@ def write_json(all_annots, out_path):
         print(content)
 
 
+def parse_pdf_date(pdf_date):
+    """Convert a raw PDF date string like 'D:20240115093000+01'00'' to 'dd.mm.yyyy'.
+    Falls back to the raw string if it can't be parsed."""
+    if not pdf_date:
+        return ""
+    s = pdf_date[2:] if pdf_date.startswith("D:") else pdf_date
+    if len(s) >= 8 and s[:8].isdigit():
+        yyyy, mm, dd = s[0:4], s[4:6], s[6:8]
+        return f"{dd}.{mm}.{yyyy}"
+    return pdf_date
+
+
+def build_toc_sections(doc):
+    """Return a list of dicts describing each TOC entry with the page-range
+    of content it owns: [{level, title, start_page, end_page}, ...]
+    end_page is exclusive. Pages are 1-indexed to match annotation['page']."""
+    toc = doc.get_toc(simple=True)  # [[level, title, page], ...]
+    sections = []
+    for i, (level, title, page) in enumerate(toc):
+        end_page = toc[i + 1][2] if i + 1 < len(toc) else doc.page_count + 1
+        sections.append({
+            "level": level,
+            "title": title,
+            "start_page": page,
+            "end_page": end_page,
+        })
+    return sections
+
+
+def annot_to_markdown_block(a):
+    """Render a single annotation as a markdown block."""
+    lines = []
+    if a["type"] in TEXT_MARKUP_TYPES:
+        quoted = a["highlighted_text"] or "*(no text captured)*"
+        lines.append(f'> "{quoted}" (page {a["page"]})')
+        meta_parts = []
+        if a["color_name"] or a["color_hex"]:
+            color_str = a["color_name"] or ""
+            if a["color_hex"]:
+                color_str += f" ({a['color_hex']})" if color_str else a["color_hex"]
+            meta_parts.append(color_str)
+        if a["author"]:
+            meta_parts.append(a["author"])
+        if a["created"]:
+            meta_parts.append(f"created {parse_pdf_date(a['created'])}")
+        if a["modified"]:
+            meta_parts.append(f"modified {parse_pdf_date(a['modified'])}")
+        if meta_parts:
+            lines.append(f"*{' · '.join(meta_parts)}*")
+        # Extra note text attached to a highlight (rare, but possible)
+        if a["note"]:
+            lines.append(f"\n📝 {a['note']}")
+    else:
+        # Sticky note / free text annotation
+        lines.append(f'**📝 Note** (page {a["page"]})')
+        lines.append(f'> {a["note"] or "*(empty note)*"}')
+        meta_parts = []
+        if a["author"]:
+            meta_parts.append(a["author"])
+        if a["created"]:
+            meta_parts.append(f"created {parse_pdf_date(a['created'])}")
+        if a["modified"]:
+            meta_parts.append(f"modified {parse_pdf_date(a['modified'])}")
+        if meta_parts:
+            lines.append(f"*{' · '.join(meta_parts)}*")
+    return "\n".join(lines)
+
+
+def write_markdown(annots_by_file, doc_titles, tocs, out_path):
+    """
+    annots_by_file: dict {file_path: [annotation dicts]}
+    doc_titles: dict {file_path: title string}
+    tocs: dict {file_path: list of TOC sections (see build_toc_sections)}
+    """
+    md_lines = []
+
+    for file_path, annots in annots_by_file.items():
+        md_lines.append(f"# {doc_titles[file_path]}\n")
+
+        if not annots:
+            md_lines.append("*(no annotations found)*\n")
+            continue
+
+        sections = tocs.get(file_path) or []
+
+        if not sections:
+            # No table of contents available: list annotations flat, in page order
+            for a in sorted(annots, key=lambda x: x["page"]):
+                md_lines.append(annot_to_markdown_block(a))
+                md_lines.append("")
+        else:
+            used = set()
+
+            # Annotations that fall before the first TOC entry's page
+            first_page = sections[0]["start_page"]
+            preamble = [a for a in annots if a["page"] < first_page]
+            for a in sorted(preamble, key=lambda x: x["page"]):
+                md_lines.append(annot_to_markdown_block(a))
+                md_lines.append("")
+                used.add(id(a))
+
+            for sec in sections:
+                heading_level = min(sec["level"] + 1, 6)  # H1 is reserved for file title
+                md_lines.append(f"{'#' * heading_level} {sec['title']}\n")
+                section_annots = [
+                    a for a in annots
+                    if sec["start_page"] <= a["page"] < sec["end_page"]
+                ]
+                if not section_annots:
+                    continue
+                for a in sorted(section_annots, key=lambda x: x["page"]):
+                    md_lines.append(annot_to_markdown_block(a))
+                    md_lines.append("")
+                    used.add(id(a))
+
+        md_lines.append("")  # blank line between files
+
+    content = "\n".join(md_lines).rstrip() + "\n"
+    Path(out_path).write_text(content, encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Extract highlights and notes (with underlying text) from PDF files."
@@ -198,19 +319,52 @@ def main():
                                                  "If omitted, prints text to stdout.")
     parser.add_argument("-f", "--force", action="store_true",
                          help="Kept for compatibility with the old script; no-op here.")
+    parser.add_argument("--markdown", action="store_true",
+                         help="Also save a Markdown file with highlights/notes organized "
+                              "under the PDF's chapter/section headings (if a table of "
+                              "contents is present).")
+    parser.add_argument("--markdown-output",
+                         help="Path for the Markdown file (default: annotations.md, or "
+                              "<base of -o> + .md if -o was given).")
     args = parser.parse_args()
 
     all_annots = []
+    annots_by_file = {}
+    doc_titles = {}
+    tocs = {}
+
     for pdf in args.pdfs:
         pdf_path = Path(pdf)
         if not pdf_path.exists():
             print(f"Skipping (not found): {pdf}", file=sys.stderr)
             continue
         print(f"Extracting annotations from: {pdf_path.name}", file=sys.stderr)
-        all_annots.extend(extract_annotations(pdf_path))
+
+        doc = fitz.open(pdf_path)
+        file_annots = extract_annotations(pdf_path, doc=doc)
+        all_annots.extend(file_annots)
+
+        if args.markdown:
+            key = str(pdf_path)
+            annots_by_file[key] = file_annots
+            meta_title = (doc.metadata or {}).get("title", "").strip()
+            doc_titles[key] = meta_title if meta_title else pdf_path.stem
+            tocs[key] = build_toc_sections(doc)
+
+        doc.close()
 
     if not all_annots:
         print("No annotations found.", file=sys.stderr)
+
+    if args.markdown:
+        if args.markdown_output:
+            md_path = args.markdown_output
+        elif args.output:
+            md_path = str(Path(args.output).with_suffix(".md"))
+        else:
+            md_path = "annotations.md"
+        write_markdown(annots_by_file, doc_titles, tocs, md_path)
+        print(f"Wrote Markdown summary to {md_path}", file=sys.stderr)
 
     if args.output:
         ext = Path(args.output).suffix.lower()
