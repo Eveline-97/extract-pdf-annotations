@@ -49,6 +49,26 @@ TEXT_MARKUP_TYPES = {"Highlight", "Underline", "StrikeOut", "Squiggly"}
 NOTE_TYPES = {"Text", "FreeText"}
 
 
+DEFAULT_OUTPUT_DIR = "output"
+
+
+def resolve_output_path(path_str):
+    """
+    If path_str is a bare filename (no folder component), place it inside
+    the default 'output/' folder (created if needed). If it already
+    includes a folder (relative or absolute), respect it exactly as given
+    (still creating any missing parent folders).
+    """
+    p = Path(path_str)
+    if p.parent == Path("."):
+        target_dir = Path(DEFAULT_OUTPUT_DIR)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        return target_dir / p.name
+    else:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
+
+
 def color_to_name_and_hex(color_tuple):
     """Convert an (r, g, b) 0-1 float tuple to a hex string and a rough name."""
     if not color_tuple:
@@ -356,25 +376,27 @@ def main():
     if not all_annots:
         print("No annotations found.", file=sys.stderr)
 
+    output_path = resolve_output_path(args.output) if args.output else None
+
     if args.markdown:
         if args.markdown_output:
-            md_path = args.markdown_output
-        elif args.output:
-            md_path = str(Path(args.output).with_suffix(".md"))
+            md_path = resolve_output_path(args.markdown_output)
+        elif output_path:
+            md_path = output_path.with_suffix(".md")
         else:
-            md_path = "annotations.md"
+            md_path = resolve_output_path("annotations.md")
         write_markdown(annots_by_file, doc_titles, tocs, md_path)
         print(f"Wrote Markdown summary to {md_path}", file=sys.stderr)
 
-    if args.output:
-        ext = Path(args.output).suffix.lower()
+    if output_path:
+        ext = output_path.suffix.lower()
         if ext == ".json":
-            write_json(all_annots, args.output)
+            write_json(all_annots, output_path)
         elif ext == ".csv":
-            write_csv(all_annots, args.output)
+            write_csv(all_annots, output_path)
         else:
-            write_txt(all_annots, args.output)
-        print(f"Wrote {len(all_annots)} annotation(s) to {args.output}", file=sys.stderr)
+            write_txt(all_annots, output_path)
+        print(f"Wrote {len(all_annots)} annotation(s) to {output_path}", file=sys.stderr)
     else:
         write_txt(all_annots, None)
 
