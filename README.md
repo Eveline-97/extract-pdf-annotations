@@ -36,9 +36,6 @@ python3 extract_pdf_annotations.py yourfile.pdf --markdown --markdown-output not
 ## Limitations
 Beware this script will only work well if the PDF and its highlights/notes are digitally-readable, not with simply scanned PDFs. You can run your scans through OCR (e.g. ocrmypdf) first to add a text layer before annotating.
 
-## TODO
-- [ ] Doesn't work with () or [] in filename.
-
 ## Credits
 Built with the help of Claude (Anthropic), based on a workflow originally
 inspired by a 2014 [AppleScript tool](https://github.com/JensLincke/PDFMarkupAndNotesExtractor) by Jens Lincke.
