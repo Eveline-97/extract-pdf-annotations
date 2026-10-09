@@ -96,10 +96,10 @@ def color_to_name_and_hex(color_tuple):
         name = "White" if v > 0.85 else "Gray"
     elif hue_deg < 15 or hue_deg >= 345:
         name = "Red"
-    elif hue_deg < 45:
+    elif hue_deg < 35:
         name = "Orange"
     elif hue_deg < 70:
-        name = "Yellow"
+        name = "Yellow"  # Preview's yellow sits around hue 35-50
     elif hue_deg < 170:
         name = "Green"
     elif hue_deg < 200:
@@ -389,7 +389,7 @@ def merge_annotation_groups(annots):
         for i, m in enumerate(members):
             frag = m["highlighted_text"] or "(no text captured)"
             if i > 0:
-                text_parts.append("[...]" if m["_gap_before"] else "")
+                text_parts.append("\\[...]" if m["_gap_before"] else "")
             text_parts.append(frag)
         combined_text = " ".join(t for t in text_parts if t)
 
